@@ -1,0 +1,88 @@
+# Builds a signed WordArt APK from a tag in the private Njordics/WordArt repo and publishes it
+# as a release here. The app checks this repo's latest release for updates.
+#
+# Started by tools/release.ps1 in the WordArt repo (or manually from the Actions tab).
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag in Njordics/WordArt to release, e.g. v0.2.0"
+        required: true
+      notes:
+        description: "Release notes (defaults to the tag's annotation message)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency: release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Validate tag
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Tag must look like v1.2.3"; exit 1; }
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists"; exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Check out WordArt source
+        uses: actions/checkout@v4
+        with:
+          repository: Njordics/WordArt
+          ref: refs/tags/${{ inputs.tag }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          path: src
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build signed APK
+        working-directory: src
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          WORDART_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          WORDART_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          WORDART_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          export WORDART_KEYSTORE="$RUNNER_TEMP/release.jks"
+          echo "$KEYSTORE_BASE64" | base64 -d > "$WORDART_KEYSTORE"
+          VERSION="${TAG#v}"
+          chmod +x gradlew
+          ./gradlew assembleRelease -PappVersionName="$VERSION" --no-daemon --stacktrace
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/WordArt-$VERSION.apk"
+          rm -f "$WORDART_KEYSTORE"
+
+      - name: Verify signature
+        run: |
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner
+          "$APKSIGNER" verify --print-certs "WordArt-${TAG#v}.apk" | tee signer.txt
+          # must match the key every installed copy was signed with
+          grep -qi "4897db1c823e5276886b8556a3e7b76b8d2296f2d3256a5969d2902987a514ab" signer.txt
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          if [ -z "$NOTES" ]; then
+            NOTES=$(git -C src for-each-ref "refs/tags/$TAG" --format='%(contents)')
+          fi
+          [ -n "$NOTES" ] || NOTES="WordArt ${TAG#v}"
+          printf '%s\n' "$NOTES" > notes.md
+          gh release create "$TAG" "WordArt-${TAG#v}.apk" --repo "$GITHUB_REPOSITORY" \
+            --title "WordArt ${TAG#v}" --notes-file notes.md --latest
