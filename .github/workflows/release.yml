@@ -51,6 +51,10 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v5
 
+      - name: Unit tests
+        working-directory: src
+        run: chmod +x gradlew && ./gradlew testGithubDebugUnitTest --no-daemon
+
       - name: Build signed APK
         working-directory: src
         env:
