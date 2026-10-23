@@ -63,8 +63,10 @@ jobs:
           echo "$KEYSTORE_BASE64" | base64 -d > "$WORDART_KEYSTORE"
           VERSION="${TAG#v}"
           chmod +x gradlew
-          ./gradlew assembleRelease -PappVersionName="$VERSION" --no-daemon --stacktrace
-          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/WordArt-$VERSION.apk"
+          # github flavor = sideloaded APK with the self-updater; play flavor = AAB for the Play Console
+          ./gradlew assembleGithubRelease bundlePlayRelease -PappVersionName="$VERSION" --no-daemon --stacktrace
+          cp app/build/outputs/apk/github/release/app-github-release.apk "$GITHUB_WORKSPACE/WordArt-$VERSION.apk"
+          cp app/build/outputs/bundle/playRelease/app-play-release.aab "$GITHUB_WORKSPACE/WordArt-$VERSION-play.aab"
           rm -f "$WORDART_KEYSTORE"
 
       - name: Verify signature
@@ -73,6 +75,13 @@ jobs:
           "$APKSIGNER" verify --print-certs "WordArt-${TAG#v}.apk" | tee signer.txt
           # must match the key every installed copy was signed with
           grep -qi "4897db1c823e5276886b8556a3e7b76b8d2296f2d3256a5969d2902987a514ab" signer.txt
+
+      - name: Keep the Play bundle as a build artifact (not published)
+        uses: actions/upload-artifact@v4
+        with:
+          name: WordArt-play-aab
+          path: WordArt-*-play.aab
+          retention-days: 90
 
       - name: Publish release
         env:
